@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
-# app.py : 射出成形材料断面の結晶粒径解析（Streamlit 版）
-# Author: 福田さん向け 改善版（ローカル/VSCode 実行想定）
+# app.py : 射出成形材料断面の欠陥（空隙）解析（Streamlit 版）
+# Author: 福田さん向け 改善版（Streamlit Cloud / ローカル両対応）
 #
 # === この版のポイント ===
 # 1) 検出対象を切替可能：
 #    - 白領域（材料/粒子）
 #    - 黒領域（欠陥）：
-#         a) 二値の黒（内部穴）方式（従来）
-#         b) 元画像の深い黒点（ブラックハット）方式（NEW）
+#         a) 二値の黒（内部穴）方式
+#         b) 元画像の深い黒点（ブラックハット）方式
 # 2) 欠陥マスク用Open/Close（サイドバー調整）
 # 3) オーバーレイ輪郭＝赤（太さ調整、輪郭のみ表示可）
 # 4) 欠陥率（A案）：欠陥総面積 / 材料面積（%）を画面表示＋CSV出力
 # 5) use_container_width 統一
 # 6) Watershed min_distance をピーク抽出に反映
+# 7) 日本語フォント：matplotlib-fontja（Streamlit Cloud のPython 3.12+でも動かしやすい）
 
 import io
 import os
+import sys
 import zipfile
 import tempfile
 from typing import List, Tuple, Dict, Optional
@@ -24,20 +26,27 @@ import numpy as np
 import pandas as pd
 import cv2
 import streamlit as st
+
 import matplotlib
-import japanize_matplotlib  # 日本語フォント設定（IPAexGothic等）を自動適用
 import matplotlib.pyplot as plt
-from matplotlib import font_manager
+
+# 日本語フォント（matplotlib-fontja）
+# requirements.txt に matplotlib-fontja を入れておく前提
+try:
+    import matplotlib_fontja  # noqa: F401
+    FONTJA_OK = True
+except Exception:
+    FONTJA_OK = False
+
 from skimage import measure, morphology, segmentation, exposure, util
 from skimage.feature import peak_local_max
 from scipy import ndimage as ndi
 
 
 # =========================================================
-# 日本語フォント設定（Streamlit Cloud対応：同梱フォントを強制）
+# Matplotlib 体裁
 # =========================================================
-def setup_japanese_font_and_style():
-    # japanize_matplotlib を import 済みなら、日本語フォントは自動で有効になります
+def setup_matplotlib_style():
     matplotlib.rcParams["axes.unicode_minus"] = False
     matplotlib.rcParams["font.size"] = 9
     matplotlib.rcParams["axes.titlesize"] = 10
@@ -47,6 +56,9 @@ def setup_japanese_font_and_style():
     matplotlib.rcParams["legend.fontsize"] = 8
     matplotlib.rcParams["figure.autolayout"] = False
     matplotlib.rcParams["lines.linewidth"] = 1.5
+
+
+setup_matplotlib_style()
 
 
 # =========================================================
@@ -150,7 +162,7 @@ def extract_internal_black_defects(bin_clean_u8: np.ndarray,
 
 # =========================================================
 # 欠陥抽出（黒領域）
-#   (B) 元画像の深い黒点（ブラックハット）方式（NEW）
+#   (B) 元画像の深い黒点（ブラックハット）方式
 # =========================================================
 def extract_dark_spots_blackhat(img_u8: np.ndarray,
                                 material_mask_u8: np.ndarray,
@@ -159,37 +171,27 @@ def extract_dark_spots_blackhat(img_u8: np.ndarray,
                                 manual_thr: int,
                                 border_exclude_px: int = 0) -> Tuple[np.ndarray, np.ndarray]:
     """
-    - img_u8: 元画像(0-255) または前処理後画像
-    - material_mask_u8: 0/255 材料領域マスク（背景除外）
-    - bh_ksize: ブラックハットのカーネルサイズ（欠陥より少し大きく）
-    - thresh_mode: 'otsu' or 'manual'
-    - manual_thr: 手動しきい値
-    - border_exclude_px: 材料境界近傍を除外（影/縁の偽検出対策）
-
     return:
-      defect_mask_u8 (0/255), blackhat_u8 (0/255相当の強調画像)
+      defect_mask_u8 (0/255), blackhat_u8（ROI上の強調画像）
     """
-    # 材料境界の除外（任意）
     mat = (material_mask_u8 > 0).astype(np.uint8) * 255
     if border_exclude_px > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*border_exclude_px+1, 2*border_exclude_px+1))
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * border_exclude_px + 1, 2 * border_exclude_px + 1)
+        )
         mat = cv2.erode(mat, k, iterations=1)
 
-    # ブラックハット：暗点を強調
     ksz = max(3, int(bh_ksize) | 1)  # 奇数化
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
     blackhat = cv2.morphologyEx(img_u8, cv2.MORPH_BLACKHAT, kernel)
 
-    # 材料領域だけに限定
     blackhat_roi = cv2.bitwise_and(blackhat, blackhat, mask=mat)
 
-    # 二値化
     if thresh_mode == "otsu":
-        # Otsuは背景が少ないROIでも効くが、状況により過剰/過小があり得る
-        thr, defect = cv2.threshold(blackhat_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        _, defect = cv2.threshold(blackhat_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     else:
-        thr = int(manual_thr)
-        _, defect = cv2.threshold(blackhat_roi, thr, 255, cv2.THRESH_BINARY)
+        _, defect = cv2.threshold(blackhat_roi, int(manual_thr), 255, cv2.THRESH_BINARY)
 
     return defect, blackhat_roi
 
@@ -224,7 +226,7 @@ def compute_area_stats_A(bin_clean_u8: np.ndarray,
 
 
 # =========================================================
-# Watershed
+# Watershed（接触分離）
 # =========================================================
 def split_touching_particles(bin_u8: np.ndarray,
                              min_distance_px: int,
@@ -365,7 +367,6 @@ def overlay_labels(img_gray: np.ndarray,
     label_keep = label_img.copy()
     label_keep[~keep_mask] = 0
 
-    # 塗りつぶし（任意）
     if not contour_only:
         a = float(np.clip(fill_alpha, 0.0, 1.0))
         for _, row in df.iterrows():
@@ -387,7 +388,6 @@ def overlay_labels(img_gray: np.ndarray,
                 continue
             img_color[ys, xs] = ((1 - a) * img_color[ys, xs] + a * np.array(color)).astype(np.uint8)
 
-    # 輪郭＝赤
     if draw_red_contour:
         boundary = segmentation.find_boundaries(label_keep, mode="outer")
         bnd = (boundary.astype(np.uint8) * 255)
@@ -400,7 +400,6 @@ def overlay_labels(img_gray: np.ndarray,
         ys, xs = np.where(bnd > 0)
         img_color[ys, xs] = (0, 0, 255)
 
-    # ID表示
     if show_id:
         for _, row in df.iterrows():
             cx, cy = int(row["centroid_x_px"]), int(row["centroid_y_px"])
@@ -416,7 +415,7 @@ def overlay_labels(img_gray: np.ndarray,
 # =========================================================
 def plot_distributions(df: pd.DataFrame, xcols: List[str], group: Optional[str] = None):
     if df.empty:
-        st.info("有効な粒子がありません。しきい値・面積フィルタを調整してください。")
+        st.info("有効な欠陥/粒子がありません。しきい値・面積フィルタを調整してください。")
         return
 
     FIGSIZE = (3.5, 2.6)
@@ -514,15 +513,12 @@ def process_one_image(name: str,
     img_gray = read_image_from_bytes(file_bytes)
     img_pre = apply_preprocess(img_gray, clahe_clip, gauss_ksize, gauss_sigma)
 
-    # 材料マスク用途にも使う「二値（後処理込み）」を常に作る
     bin_img = binarize(img_pre, threshold_method, manual_thresh, adaptive_block, adaptive_C)
     bin_clean = morph_cleanup(bin_img, open_ksize, open_iter, close_ksize, close_iter)
 
     debug_bh = np.zeros_like(img_gray, dtype=np.uint8)
 
-    # --- 解析対象の切替 ---
     if target_mode == "黒領域（欠陥）":
-        # 材料領域（背景除外）マスク：bin_clean から最大連結成分
         material_mask_u8 = (largest_component_mask(bin_clean).astype(np.uint8) * 255)
 
         if defect_mode_black == "二値の黒（内部穴）":
@@ -531,9 +527,7 @@ def process_one_image(name: str,
                 assume_material_is_largest=assume_material_is_largest
             )
             debug_bh = np.zeros_like(img_gray, dtype=np.uint8)
-
         else:
-            # 元画像の深い黒点（ブラックハット）
             img_used = img_pre if bh_use_preprocessed else img_gray
             defect_mask, debug_bh = extract_dark_spots_blackhat(
                 img_u8=img_used.astype(np.uint8),
@@ -544,27 +538,21 @@ def process_one_image(name: str,
                 border_exclude_px=bh_border_exclude
             )
 
-        # 欠陥マスク後処理（ノイズ除去）
         defect_mask = morph_cleanup(
             defect_mask,
             defect_open_ksize, defect_open_iter,
             defect_close_ksize, defect_close_iter
         )
-
         bin_target = defect_mask
-
     else:
-        # 白領域（材料/粒子）
         bin_target = bin_clean
         debug_bh = np.zeros_like(img_gray, dtype=np.uint8)
 
-    # --- ラベリング ---
     if use_watershed:
         label_img = split_touching_particles(bin_target, min_distance_px, h_max)
     else:
         label_img = label_by_connected_components(bin_target)
 
-    # --- 計測 ---
     df = extract_region_metrics(label_img, um_per_px, exclude_largest, min_area_px, min_area_um2)
     if not df.empty:
         df.insert(0, "source", name)
@@ -572,7 +560,6 @@ def process_one_image(name: str,
         if target_mode == "黒領域（欠陥）":
             df.insert(2, "defect_mode", defect_mode_black)
 
-    # --- overlay ---
     overlay = overlay_labels(
         img_gray, label_img, df, aspect_bins,
         show_id=show_id,
@@ -594,6 +581,10 @@ st.caption("黒欠陥：二値の穴方式／元画像の深い黒点（ブラ�
 
 with st.sidebar:
     st.header("解析設定")
+    st.caption("環境情報")
+    st.write("Python:", sys.version.split()[0])
+    st.write("matplotlib-fontja:", "OK" if FONTJA_OK else "NG（requirements.txt要確認）")
+    st.markdown("---")
 
     st.subheader("スケール設定")
     col_scale = st.columns(2)
@@ -741,7 +732,6 @@ if uploaded_files:
             if not df.empty:
                 results.append(df)
 
-            # 欠陥率サマリー（A案）
             defect_mask_for_ratio = bin_target if target_mode == "黒領域（欠陥）" else np.zeros_like(bin_clean)
             stats = compute_area_stats_A(
                 bin_clean_u8=bin_clean,
@@ -764,7 +754,6 @@ if uploaded_files:
     df_all = pd.concat(results, ignore_index=True) if len(results) > 0 else pd.DataFrame()
     df_sum = pd.DataFrame(summaries) if len(summaries) > 0 else pd.DataFrame()
 
-    # --- プレビュー ---
     st.markdown("### 可視化プレビュー")
     show_blackhat = (target_mode == "黒領域（欠陥）" and defect_mode_black == "元画像の深い黒点（ブラックハット）")
 
@@ -797,7 +786,6 @@ if uploaded_files:
                          caption="オーバーレイ（輪郭=赤）",
                          use_container_width=True, clamp=True)
 
-    # --- 欠陥率サマリー ---
     if not df_sum.empty:
         st.markdown("### 欠陥率サマリー（A案：欠陥総面積 / 材料面積）")
         df_sum_disp = df_sum[[
@@ -828,7 +816,6 @@ if uploaded_files:
             mime="text/csv"
         )
 
-    # --- 粒子/欠陥 特性CSV ---
     if not df_all.empty:
         st.markdown("### エクスポート（欠陥/粒子 特性）")
         csv_bytes = df_all.to_csv(index=False).encode("utf-8-sig")
@@ -839,7 +826,6 @@ if uploaded_files:
             mime="text/csv"
         )
 
-    # --- オーバーレイZIP ---
     with tempfile.TemporaryDirectory() as tmpd:
         zip_path = os.path.join(tmpd, "overlays.zip")
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -855,7 +841,6 @@ if uploaded_files:
                 mime="application/zip"
             )
 
-    # --- 統計可視化 ---
     if not df_all.empty:
         st.markdown("### 統計可視化（形状指標）")
         plot_distributions(df_all, ["equiv_diam_um", "aspect_ratio", "circularity"], group="source")
