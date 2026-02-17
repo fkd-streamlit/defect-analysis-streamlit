@@ -33,49 +33,71 @@ from scipy import ndimage as ndi
 
 
 # =========================================================
-# 日本語フォント設定（文字化け対策）＋見た目
-# Streamlit Cloud 対応：fonts/ に同梱したフォントを優先的に使用
+# 日本語フォント設定（Streamlit Cloud対応：同梱フォントを強制）
 # =========================================================
 def setup_japanese_font_and_style():
     import os
-    from matplotlib import font_manager
     import matplotlib
+    from matplotlib import font_manager
 
-    # 1) リポジトリ同梱フォント（最優先）
-    #   fonts/NotoSansJP-Regular.otf などを置く想定
-    local_font_candidates = [
-        os.path.join("fonts", "NotoSansJP-Regular.otf"),
-        os.path.join("fonts", "NotoSansJP-Regular.ttf"),
-        os.path.join("fonts", "NotoSansCJKjp-Regular.otf"),
-        os.path.join("fonts", "NotoSansCJKjp-Regular.ttf"),
-    ]
+    # --- 1) リポジトリ同梱フォントを探索（fonts/ 配下） ---
+    font_dir = "fonts"
+    local_fonts = []
+    if os.path.isdir(font_dir):
+        for fn in os.listdir(font_dir):
+            if fn.lower().endswith((".ttf", ".otf", ".ttc")):
+                local_fonts.append(os.path.join(font_dir, fn))
 
-    for fp in local_font_candidates:
-        if os.path.exists(fp):
-            try:
-                font_manager.fontManager.addfont(fp)
-                prop = font_manager.FontProperties(fname=fp)
-                matplotlib.rcParams["font.family"] = prop.get_name()
-                break
-            except Exception:
-                pass
+    chosen_font_name = None
+    chosen_font_path = None
 
-    # 2) OSに入っているフォントから探す（ローカルWindows向け）
-    if matplotlib.rcParams.get("font.family", None) is None or matplotlib.rcParams["font.family"] in [None, "sans-serif"]:
+    # 優先順（名前にJPを含むなどを優先）
+    def _score(p):
+        name = os.path.basename(p).lower()
+        score = 0
+        if "notosansjp" in name or "noto" in name:
+            score += 10
+        if "jp" in name or "cjk" in name:
+            score += 5
+        if "regular" in name:
+            score += 2
+        return score
+
+    local_fonts = sorted(local_fonts, key=_score, reverse=True)
+
+    for fp in local_fonts:
+        try:
+            font_manager.fontManager.addfont(fp)
+            prop = font_manager.FontProperties(fname=fp)
+            chosen_font_name = prop.get_name()
+            chosen_font_path = fp
+            break
+        except Exception:
+            continue
+
+    # --- 2) 同梱が無理ならOS内フォントを探す（ローカル向け） ---
+    if chosen_font_name is None:
         candidates = [
-            "Yu Gothic", "Yu Gothic UI",
-            "Meiryo", "Meiryo UI",
-            "MS Gothic", "MS PGothic",
-            "BIZ UDゴシック", "BIZ UDPGothic",
-            "Noto Sans CJK JP", "Noto Sans JP",
+            "Noto Sans JP", "Noto Sans CJK JP",
+            "BIZ UDPGothic", "BIZ UDゴシック",
+            "Yu Gothic UI", "Yu Gothic",
+            "Meiryo UI", "Meiryo",
+            "MS PGothic", "MS Gothic",
         ]
         available = {f.name for f in font_manager.fontManager.ttflist}
         for name in candidates:
             if name in available:
-                matplotlib.rcParams["font.family"] = name
+                chosen_font_name = name
+                chosen_font_path = "(system font)"
                 break
 
-    # 3) 体裁（共通）
+    # --- 3) Matplotlibへ強制適用（ここが重要） ---
+    # font.family は list のことがあるので、必ず list で与える
+    if chosen_font_name:
+        matplotlib.rcParams["font.family"] = [chosen_font_name]
+        # sans-serif を明示（Matplotlibがこちらを使うケースが多い）
+        matplotlib.rcParams["font.sans-serif"] = [chosen_font_name, "DejaVu Sans"]
+
     matplotlib.rcParams["axes.unicode_minus"] = False
     matplotlib.rcParams["font.size"] = 9
     matplotlib.rcParams["axes.titlesize"] = 10
@@ -86,6 +108,7 @@ def setup_japanese_font_and_style():
     matplotlib.rcParams["figure.autolayout"] = False
     matplotlib.rcParams["lines.linewidth"] = 1.5
 
+    return chosen_font_name, chosen_font_path
 
 # =========================================================
 # 共通ユーティリティ
