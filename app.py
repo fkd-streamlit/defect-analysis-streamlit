@@ -34,21 +34,48 @@ from scipy import ndimage as ndi
 
 # =========================================================
 # 日本語フォント設定（文字化け対策）＋見た目
+# Streamlit Cloud 対応：fonts/ に同梱したフォントを優先的に使用
 # =========================================================
 def setup_japanese_font_and_style():
-    candidates = [
-        "Yu Gothic", "Yu Gothic UI",
-        "Meiryo", "Meiryo UI",
-        "MS Gothic", "MS PGothic",
-        "BIZ UDゴシック", "BIZ UDPGothic",
-        "Noto Sans CJK JP", "Noto Sans JP",
-    ]
-    available = {f.name for f in font_manager.fontManager.ttflist}
-    for name in candidates:
-        if name in available:
-            matplotlib.rcParams["font.family"] = name
-            break
+    import os
+    from matplotlib import font_manager
+    import matplotlib
 
+    # 1) リポジトリ同梱フォント（最優先）
+    #   fonts/NotoSansJP-Regular.otf などを置く想定
+    local_font_candidates = [
+        os.path.join("fonts", "NotoSansJP-Regular.otf"),
+        os.path.join("fonts", "NotoSansJP-Regular.ttf"),
+        os.path.join("fonts", "NotoSansCJKjp-Regular.otf"),
+        os.path.join("fonts", "NotoSansCJKjp-Regular.ttf"),
+    ]
+
+    for fp in local_font_candidates:
+        if os.path.exists(fp):
+            try:
+                font_manager.fontManager.addfont(fp)
+                prop = font_manager.FontProperties(fname=fp)
+                matplotlib.rcParams["font.family"] = prop.get_name()
+                break
+            except Exception:
+                pass
+
+    # 2) OSに入っているフォントから探す（ローカルWindows向け）
+    if matplotlib.rcParams.get("font.family", None) is None or matplotlib.rcParams["font.family"] in [None, "sans-serif"]:
+        candidates = [
+            "Yu Gothic", "Yu Gothic UI",
+            "Meiryo", "Meiryo UI",
+            "MS Gothic", "MS PGothic",
+            "BIZ UDゴシック", "BIZ UDPGothic",
+            "Noto Sans CJK JP", "Noto Sans JP",
+        ]
+        available = {f.name for f in font_manager.fontManager.ttflist}
+        for name in candidates:
+            if name in available:
+                matplotlib.rcParams["font.family"] = name
+                break
+
+    # 3) 体裁（共通）
     matplotlib.rcParams["axes.unicode_minus"] = False
     matplotlib.rcParams["font.size"] = 9
     matplotlib.rcParams["axes.titlesize"] = 10
@@ -58,9 +85,6 @@ def setup_japanese_font_and_style():
     matplotlib.rcParams["legend.fontsize"] = 8
     matplotlib.rcParams["figure.autolayout"] = False
     matplotlib.rcParams["lines.linewidth"] = 1.5
-
-
-setup_japanese_font_and_style()
 
 
 # =========================================================
