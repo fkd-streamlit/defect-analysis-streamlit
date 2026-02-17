@@ -6,4 +6,5 @@ matplotlib
 Pillow
 scikit-image
 opencv-python-headless
-japanize-matplotlib
+matplotlib-fontja
+
