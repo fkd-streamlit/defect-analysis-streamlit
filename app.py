@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py : 射出成形材料断面の欠陥（空隙）解析（Streamlit 版）
+# app01.py : 射出成形材料断面の欠陥（空隙）解析（Streamlit 版）
 # Author: 福田さん向け 改善版（Streamlit Cloud / ローカル両対応）
 #
 # === この版のポイント ===
@@ -15,6 +15,7 @@
 # 6) Watershed min_distance をピーク抽出に反映
 # 7) 日本語フォント：matplotlib-fontja（requirements側で導入済み想定）
 # 8) ★改善：可視化プレビューは「選択した1枚」だけ表示し、オーバーレイを大きく表示
+# 9) ★改善：母材マスク（背景が真っ黒でも背景除外）を導入し、背景の誤抽出を回避（サイドバー調整）
 
 import io
 import os
@@ -76,6 +77,51 @@ def resize_to_height(img_bgr: np.ndarray, target_h: int) -> np.ndarray:
 
 
 # =========================================================
+# 母材（試験片）マスク：四隅から flood fill で背景を除外
+# =========================================================
+def compute_specimen_mask_floodfill(img_gray: np.ndarray,
+                                    tol: int = 20,
+                                    close_ksize: int = 21,
+                                    close_iter: int = 2) -> np.ndarray:
+    """
+    背景が黒い/暗い樹脂で囲まれていても、四隅から flood fill して背景を除外し、
+    試験片（母材）領域のマスク(0/255)を返す。
+
+    tol: flood fill の許容差（大きいほど背景を広く拾う）
+    close_ksize/iter: 試験片マスクの穴埋め・連結強化（奇数推奨）
+    """
+    h, w = img_gray.shape[:2]
+    work = img_gray.copy()
+
+    # floodFill 用マスク（OpenCV仕様で +2 が必要）
+    ff_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+
+    # 四隅を種に背景を塗りつぶす
+    # newVal は何でも良いが、maskで背景領域を把握する
+    seeds = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
+    for sx, sy in seeds:
+        cv2.floodFill(work, ff_mask, (sx, sy), 0, loDiff=tol, upDiff=tol)
+
+    bg_mask = ff_mask[1:h+1, 1:w+1] > 0  # Trueが背景
+    specimen = (~bg_mask).astype(np.uint8) * 255
+
+    # 穴埋め・連結強化（Close）
+    ksz = max(3, int(close_ksize) | 1)  # 奇数化
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
+    if int(close_iter) > 0:
+        specimen = cv2.morphologyEx(specimen, cv2.MORPH_CLOSE, k, iterations=int(close_iter))
+
+    # 最大連結成分のみ残す（小ゴミ除外）
+    lab = measure.label(specimen > 0, connectivity=2)
+    if lab.max() > 0:
+        props = measure.regionprops(lab)
+        largest = max(props, key=lambda p: p.area)
+        specimen = ((lab == largest.label).astype(np.uint8) * 255)
+
+    return specimen
+
+
+# =========================================================
 # 共通ユーティリティ
 # =========================================================
 def read_image_from_bytes(file_bytes: bytes) -> np.ndarray:
@@ -123,13 +169,13 @@ def binarize(img: np.ndarray,
         thr, _ = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         _, bin_img = cv2.threshold(img, thr, 255, cv2.THRESH_BINARY_INV)
     elif method == "adaptive":
-        block = max(3, adaptive_block | 1)  # 奇数化
+        block = max(3, int(adaptive_block) | 1)  # 奇数化
         bin_img = cv2.adaptiveThreshold(
             img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, blockSize=block, C=adaptive_C
+            cv2.THRESH_BINARY_INV, blockSize=block, C=int(adaptive_C)
         )
     else:
-        _, bin_img = cv2.threshold(img, manual_thresh, 255, cv2.THRESH_BINARY_INV)
+        _, bin_img = cv2.threshold(img, int(manual_thresh), 255, cv2.THRESH_BINARY_INV)
     return bin_img
 
 
@@ -138,11 +184,11 @@ def morph_cleanup(bin_img: np.ndarray,
                   close_ksize: int, close_iter: int) -> np.ndarray:
     out = bin_img.copy()
     if open_ksize > 0 and open_iter > 0:
-        k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_ksize, open_ksize))
-        out = cv2.morphologyEx(out, cv2.MORPH_OPEN, k_open, iterations=open_iter)
+        k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(open_ksize), int(open_ksize)))
+        out = cv2.morphologyEx(out, cv2.MORPH_OPEN, k_open, iterations=int(open_iter))
     if close_ksize > 0 and close_iter > 0:
-        k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_ksize, close_ksize))
-        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, k_close, iterations=close_iter)
+        k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(close_ksize), int(close_ksize)))
+        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, k_close, iterations=int(close_iter))
     return out
 
 
@@ -192,7 +238,7 @@ def extract_dark_spots_blackhat(img_u8: np.ndarray,
     if border_exclude_px > 0:
         k = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
-            (2 * border_exclude_px + 1, 2 * border_exclude_px + 1)
+            (2 * int(border_exclude_px) + 1, 2 * int(border_exclude_px) + 1)
         )
         mat = cv2.erode(mat, k, iterations=1)
 
@@ -311,9 +357,9 @@ def extract_region_metrics(label_img: np.ndarray,
         area_px = float(p.area)
         area_um2 = area_px * (um_per_px ** 2)
 
-        if area_px < max(0, min_area_px):
+        if area_px < max(0, int(min_area_px)):
             continue
-        if min_area_um2 > 0 and area_um2 < min_area_um2:
+        if min_area_um2 > 0 and area_um2 < float(min_area_um2):
             continue
 
         ecd_px = float(p.equivalent_diameter)
@@ -479,7 +525,7 @@ def plot_distributions(df: pd.DataFrame, xcols: List[str], group: Optional[str] 
 
 
 # =========================================================
-# 画像1枚処理
+# 画像1枚処理（母材マスク込み）
 # =========================================================
 def process_one_image(name: str,
                       file_bytes: bytes,
@@ -520,19 +566,46 @@ def process_one_image(name: str,
                       fill_alpha: float,
                       draw_red_contour: bool,
                       contour_thickness: int,
-                      contour_only: bool
-                      ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                      contour_only: bool,
+                      # ★母材マスク設定
+                      use_specimen_mask: bool,
+                      ff_tol: int,
+                      ff_close_ksize: int,
+                      ff_close_iter: int
+                      ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 
     img_gray = read_image_from_bytes(file_bytes)
+
+    # ★母材（試験片）マスク：背景の黒樹脂を除外
+    if use_specimen_mask:
+        specimen_mask_u8 = compute_specimen_mask_floodfill(
+            img_gray,
+            tol=int(ff_tol),
+            close_ksize=int(ff_close_ksize),
+            close_iter=int(ff_close_iter)
+        )
+    else:
+        specimen_mask_u8 = np.ones_like(img_gray, dtype=np.uint8) * 255
+
     img_pre = apply_preprocess(img_gray, clahe_clip, gauss_ksize, gauss_sigma)
 
+    # 二値（後処理込み）
     bin_img = binarize(img_pre, threshold_method, manual_thresh, adaptive_block, adaptive_C)
     bin_clean = morph_cleanup(bin_img, open_ksize, open_iter, close_ksize, close_iter)
 
+    # ★背景遮断：二値結果を母材マスク内に限定
+    if use_specimen_mask:
+        bin_clean = cv2.bitwise_and(bin_clean, bin_clean, mask=specimen_mask_u8)
+
     debug_bh = np.zeros_like(img_gray, dtype=np.uint8)
 
+    # 解析対象の切替
     if target_mode == "黒領域（欠陥）":
-        material_mask_u8 = (largest_component_mask(bin_clean).astype(np.uint8) * 255)
+        # ★ブラックハットのROIは母材マスクを優先（背景の黒樹脂を除外）
+        if use_specimen_mask:
+            material_mask_u8 = specimen_mask_u8
+        else:
+            material_mask_u8 = (largest_component_mask(bin_clean).astype(np.uint8) * 255)
 
         if defect_mode_black == "二値の黒（内部穴）":
             defect_mask = extract_internal_black_defects(
@@ -551,21 +624,29 @@ def process_one_image(name: str,
                 border_exclude_px=bh_border_exclude
             )
 
+        # 欠陥マスク後処理
         defect_mask = morph_cleanup(
             defect_mask,
             defect_open_ksize, defect_open_iter,
             defect_close_ksize, defect_close_iter
         )
+
+        # ★念のため：欠陥マスクも母材内に限定
+        if use_specimen_mask:
+            defect_mask = cv2.bitwise_and(defect_mask, defect_mask, mask=specimen_mask_u8)
+
         bin_target = defect_mask
     else:
         bin_target = bin_clean
         debug_bh = np.zeros_like(img_gray, dtype=np.uint8)
 
+    # ラベリング
     if use_watershed:
         label_img = split_touching_particles(bin_target, min_distance_px, h_max)
     else:
         label_img = label_by_connected_components(bin_target)
 
+    # 計測
     df = extract_region_metrics(label_img, um_per_px, exclude_largest, min_area_px, min_area_um2)
     if not df.empty:
         df.insert(0, "source", name)
@@ -582,7 +663,7 @@ def process_one_image(name: str,
         contour_only=contour_only
     ) if not df.empty else cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
 
-    return df, img_gray, bin_clean, bin_target, debug_bh, overlay
+    return df, img_gray, bin_clean, bin_target, debug_bh, specimen_mask_u8, overlay
 
 
 # =========================================================
@@ -597,6 +678,15 @@ with st.sidebar:
     st.caption("環境情報")
     st.write("Python:", sys.version.split()[0])
     st.write("matplotlib-fontja:", "OK" if FONTJA_OK else "NG（requirements.txt要確認）")
+    st.markdown("---")
+
+    st.subheader("母材マスク（背景の黒樹脂を除外）")
+    use_specimen_mask = st.toggle("母材マスクで背景を除外する（推奨）", value=True)
+    ff_tol = st.slider("背景flood fill 許容差 tol", 0, 80, 20, 1)
+    ff_close_ksize = st.slider("母材マスク Close カーネル（奇数推奨）", 5, 81, 21, 2)
+    ff_close_iter = st.slider("母材マスク Close 回数", 0, 5, 2, 1)
+    show_specimen_mask = st.toggle("母材マスクをプレビュー表示（選択画像）", value=False)
+
     st.markdown("---")
 
     st.subheader("スケール設定")
@@ -688,12 +778,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption(
-        "💡 深い黒点（空隙）狙いの推奨：\n"
-        "- 解析対象=黒領域（欠陥）\n"
-        "- 欠陥方式=元画像の深い黒点（ブラックハット）\n"
-        "- カーネルサイズ=欠陥径より少し大きめ\n"
-        "- 手動しきい値を上げると『より深い黒』だけに絞れます\n"
-        "- 欠陥率(A案)=欠陥総面積/材料面積(%)"
+        "💡 背景が黒樹脂の画像は、まず「母材マスクで背景を除外」をONにしてください。\n"
+        "  うまく切れない場合は tol（許容差）を上げると背景を広く除外できます。"
     )
 
 st.markdown("### 入力ファイル")
@@ -722,13 +808,13 @@ if uploaded_files:
 
     results: List[pd.DataFrame] = []
     overlays: Dict[str, np.ndarray] = {}
-    previews: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+    previews: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
     summaries: List[Dict[str, float]] = []
 
     progress = st.progress(0)
     for idx, (name, bts) in enumerate(to_process, start=1):
         try:
-            df, img_gray, bin_clean, bin_target, debug_bh, overlay_img = process_one_image(
+            df, img_gray, bin_clean, bin_target, debug_bh, specimen_mask_u8, overlay_img = process_one_image(
                 name, bts, um_per_px,
                 method, manual_thresh, adaptive_block, adaptive_C,
                 clahe_clip, gauss_ksize, gauss_sigma,
@@ -740,11 +826,12 @@ if uploaded_files:
                 use_watershed, min_distance_px, h_max,
                 exclude_largest, min_area_px, min_area_um2,
                 (aspect_low, aspect_high), show_id,
-                fill_alpha, draw_red_contour, contour_thickness, contour_only
+                fill_alpha, draw_red_contour, contour_thickness, contour_only,
+                use_specimen_mask, ff_tol, ff_close_ksize, ff_close_iter
             )
 
             overlays[name] = overlay_img
-            previews[name] = (img_gray, bin_clean, bin_target, debug_bh)
+            previews[name] = (img_gray, bin_clean, bin_target, debug_bh, specimen_mask_u8)
 
             if not df.empty:
                 results.append(df)
@@ -772,14 +859,14 @@ if uploaded_files:
     df_sum = pd.DataFrame(summaries) if len(summaries) > 0 else pd.DataFrame()
 
     # =========================================================
-    # 可視化プレビュー（★改善：選択した1枚だけ詳細表示）
+    # 可視化プレビュー（選択した1枚のみ）
     # =========================================================
     st.markdown("### 可視化プレビュー（選択した1枚）")
     if len(previews) > 0:
         names = sorted(list(previews.keys()))
         selected_name = st.selectbox("表示する画像を選択してください", names, index=0)
 
-        img_gray, bin_clean, bin_target, debug_bh = previews[selected_name]
+        img_gray, bin_clean, bin_target, debug_bh, specimen_mask_u8 = previews[selected_name]
         show_blackhat = (target_mode == "黒領域（欠陥）" and defect_mode_black == "元画像の深い黒点（ブラックハット）")
 
         st.markdown(f"**{selected_name}**")
@@ -789,11 +876,11 @@ if uploaded_files:
             with cols[0]:
                 st.image(img_gray, caption="元画像", use_container_width=True, clamp=True)
             with cols[1]:
-                st.image(bin_clean, caption="二値（後処理込み）", use_container_width=True, clamp=True)
+                st.image(bin_clean, caption="二値（後処理込み）※母材内", use_container_width=True, clamp=True)
             with cols[2]:
-                st.image(debug_bh, caption="ブラックハット強調（ROI）", use_container_width=True, clamp=True)
+                st.image(debug_bh, caption="ブラックハット強調（ROI）※母材内", use_container_width=True, clamp=True)
             with cols[3]:
-                st.image(bin_target, caption="検出対象マスク（欠陥）", use_container_width=True, clamp=True)
+                st.image(bin_target, caption="検出対象マスク（欠陥）※母材内", use_container_width=True, clamp=True)
             with cols[4]:
                 st.image(cv2.cvtColor(overlays[selected_name], cv2.COLOR_BGR2RGB),
                          caption="オーバーレイ（輪郭=赤）",
@@ -803,7 +890,7 @@ if uploaded_files:
             with cols[0]:
                 st.image(img_gray, caption="元画像", use_container_width=True, clamp=True)
             with cols[1]:
-                st.image(bin_clean, caption="二値（後処理込み）", use_container_width=True, clamp=True)
+                st.image(bin_clean, caption="二値（後処理込み）※母材内", use_container_width=True, clamp=True)
             with cols[2]:
                 st.image(bin_target, caption=f"検出対象マスク：{target_mode}", use_container_width=True, clamp=True)
             with cols[3]:
@@ -811,7 +898,11 @@ if uploaded_files:
                          caption="オーバーレイ（輪郭=赤）",
                          use_container_width=True, clamp=True)
 
-        # ---- ここがB案：オーバーレイを大きく表示（選択した1枚のみ）----
+        if show_specimen_mask:
+            st.markdown("#### 母材マスク（背景除外の確認）")
+            st.image(specimen_mask_u8, caption="母材マスク（白=母材 / 黒=背景）", use_container_width=True, clamp=True)
+
+        # ---- B案：オーバーレイを大きく表示（選択した1枚のみ）----
         if show_big_overlay:
             st.markdown("#### 最終抽出結果（オーバーレイ）拡大表示")
             big = resize_to_height(overlays[selected_name], big_overlay_height)
