@@ -13,7 +13,8 @@
 # 4) 欠陥率（A案）：欠陥総面積 / 材料面積（%）を画面表示＋CSV出力
 # 5) use_container_width 統一
 # 6) Watershed min_distance をピーク抽出に反映
-# 7) 日本語フォント：matplotlib-fontja（Streamlit Cloud のPython 3.12+でも動かしやすい）
+# 7) 日本語フォント：matplotlib-fontja（requirements側で導入済み想定）
+# 8) ★改善：可視化プレビューは「選択した1枚」だけ表示し、オーバーレイを大きく表示
 
 import io
 import os
@@ -31,7 +32,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 # 日本語フォント（matplotlib-fontja）
-# requirements.txt に matplotlib-fontja を入れておく前提
 try:
     import matplotlib_fontja  # noqa: F401
     FONTJA_OK = True
@@ -59,6 +59,20 @@ def setup_matplotlib_style():
 
 
 setup_matplotlib_style()
+
+
+# =========================================================
+# 表示用：高さ指定でリサイズ（拡大表示用）
+# =========================================================
+def resize_to_height(img_bgr: np.ndarray, target_h: int) -> np.ndarray:
+    h, w = img_bgr.shape[:2]
+    if h <= 0:
+        return img_bgr
+    scale = target_h / float(h)
+    new_w = max(1, int(w * scale))
+    # 輪郭のにじみを抑えたいので NEAREST
+    resized = cv2.resize(img_bgr, (new_w, int(target_h)), interpolation=cv2.INTER_NEAREST)
+    return resized
 
 
 # =========================================================
@@ -109,7 +123,7 @@ def binarize(img: np.ndarray,
         thr, _ = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         _, bin_img = cv2.threshold(img, thr, 255, cv2.THRESH_BINARY_INV)
     elif method == "adaptive":
-        block = max(3, adaptive_block | 1)
+        block = max(3, adaptive_block | 1)  # 奇数化
         bin_img = cv2.adaptiveThreshold(
             img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV, blockSize=block, C=adaptive_C
@@ -213,7 +227,6 @@ def compute_area_stats_A(bin_clean_u8: np.ndarray,
 
     material_area_um2 = material_area_px * (um_per_px ** 2)
     defect_area_um2 = defect_area_px * (um_per_px ** 2)
-
     defect_ratio_percent = (defect_area_px / (material_area_px + 1e-9)) * 100.0
 
     return {
@@ -669,6 +682,10 @@ with st.sidebar:
     contour_only = st.toggle("輪郭のみ（塗りつぶし無し）", value=True)
     fill_alpha = st.slider("塗りつぶし透明度", 0.0, 0.8, 0.25, 0.05)
 
+    st.subheader("最終結果（拡大表示）")
+    show_big_overlay = st.toggle("オーバーレイを大きく表示（選択した1枚のみ）", value=True)
+    big_overlay_height = st.slider("拡大表示の高さ [px]", 300, 1200, 650, 50)
+
     st.markdown("---")
     st.caption(
         "💡 深い黒点（空隙）狙いの推奨：\n"
@@ -754,11 +771,19 @@ if uploaded_files:
     df_all = pd.concat(results, ignore_index=True) if len(results) > 0 else pd.DataFrame()
     df_sum = pd.DataFrame(summaries) if len(summaries) > 0 else pd.DataFrame()
 
-    st.markdown("### 可視化プレビュー")
-    show_blackhat = (target_mode == "黒領域（欠陥）" and defect_mode_black == "元画像の深い黒点（ブラックハット）")
+    # =========================================================
+    # 可視化プレビュー（★改善：選択した1枚だけ詳細表示）
+    # =========================================================
+    st.markdown("### 可視化プレビュー（選択した1枚）")
+    if len(previews) > 0:
+        names = sorted(list(previews.keys()))
+        selected_name = st.selectbox("表示する画像を選択してください", names, index=0)
 
-    for name, (img_gray, bin_clean, bin_target, debug_bh) in previews.items():
-        st.markdown(f"**{name}**")
+        img_gray, bin_clean, bin_target, debug_bh = previews[selected_name]
+        show_blackhat = (target_mode == "黒領域（欠陥）" and defect_mode_black == "元画像の深い黒点（ブラックハット）")
+
+        st.markdown(f"**{selected_name}**")
+
         if show_blackhat:
             cols = st.columns(5)
             with cols[0]:
@@ -770,7 +795,7 @@ if uploaded_files:
             with cols[3]:
                 st.image(bin_target, caption="検出対象マスク（欠陥）", use_container_width=True, clamp=True)
             with cols[4]:
-                st.image(cv2.cvtColor(overlays[name], cv2.COLOR_BGR2RGB),
+                st.image(cv2.cvtColor(overlays[selected_name], cv2.COLOR_BGR2RGB),
                          caption="オーバーレイ（輪郭=赤）",
                          use_container_width=True, clamp=True)
         else:
@@ -782,10 +807,22 @@ if uploaded_files:
             with cols[2]:
                 st.image(bin_target, caption=f"検出対象マスク：{target_mode}", use_container_width=True, clamp=True)
             with cols[3]:
-                st.image(cv2.cvtColor(overlays[name], cv2.COLOR_BGR2RGB),
+                st.image(cv2.cvtColor(overlays[selected_name], cv2.COLOR_BGR2RGB),
                          caption="オーバーレイ（輪郭=赤）",
                          use_container_width=True, clamp=True)
 
+        # ---- ここがB案：オーバーレイを大きく表示（選択した1枚のみ）----
+        if show_big_overlay:
+            st.markdown("#### 最終抽出結果（オーバーレイ）拡大表示")
+            big = resize_to_height(overlays[selected_name], big_overlay_height)
+            st.image(
+                cv2.cvtColor(big, cv2.COLOR_BGR2RGB),
+                caption=f"オーバーレイ（拡大：高さ {big_overlay_height}px）",
+                use_container_width=True,
+                clamp=True
+            )
+
+    # --- 欠陥率サマリー ---
     if not df_sum.empty:
         st.markdown("### 欠陥率サマリー（A案：欠陥総面積 / 材料面積）")
         df_sum_disp = df_sum[[
@@ -816,6 +853,7 @@ if uploaded_files:
             mime="text/csv"
         )
 
+    # --- 粒子/欠陥 特性CSV ---
     if not df_all.empty:
         st.markdown("### エクスポート（欠陥/粒子 特性）")
         csv_bytes = df_all.to_csv(index=False).encode("utf-8-sig")
@@ -826,6 +864,7 @@ if uploaded_files:
             mime="text/csv"
         )
 
+    # --- オーバーレイZIP ---
     with tempfile.TemporaryDirectory() as tmpd:
         zip_path = os.path.join(tmpd, "overlays.zip")
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -841,6 +880,7 @@ if uploaded_files:
                 mime="application/zip"
             )
 
+    # --- 統計可視化 ---
     if not df_all.empty:
         st.markdown("### 統計可視化（形状指標）")
         plot_distributions(df_all, ["equiv_diam_um", "aspect_ratio", "circularity"], group="source")
