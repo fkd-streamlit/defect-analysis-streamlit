@@ -735,13 +735,14 @@ with st.sidebar:
     with col_scale[0]:
         um_per_px_input = st.number_input(
             "μm / px（直接）",
-            min_value     value=1.0,
+    in_value=0.0,
+            value=1.0,
             step=0.01,
             format="%.4f"
         )
     
-    with col_scale[1]:
-        st.caption("またはスケール    scalebar_um = st.number_input("スケールバー長 [μm]", min_value=0.0, value=0.0, step=1.0)
+    with col_scalest.caption("またはスケールバーから算出")
+        scalebar_um = st.number_input("スケールバー長 [μm]", min_value=0.0, value=0.0, step=1.0)
         scalebar_px = st.number_input("スケールバー長 [px]", min_value=0.0, value=0.0, step=1.0)
     
     um_per_px = compute_um_per_px(
