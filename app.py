@@ -17,10 +17,6 @@
 # 8) ★改善：可視化プレビューは「選択した1枚」だけ表示し、オーバーレイを大きく表示
 # 9) ★改善：母材マスク（背景が真っ黒でも背景除外）を導入し、背景の誤抽出を回避（サイドバー調整）
 # 10) ★重要FIX：黒欠陥の「表示（赤）」と「欠陥率サマリー」の整合を保証（dfで採用された欠陥のみ面積計上）
-#
-# ★今回の追加FIX（不安定対策）★
-# - st.file_uploader の UploadedFile に対して f.read() を繰り返すと rerun で空になることがあるため、
-#   f.getvalue() を使って常に全バイトを取得する（ZIP/通常ファイル両方）
 
 import io
 import os
@@ -47,6 +43,7 @@ from skimage import measure, morphology, segmentation, exposure, util
 from skimage.feature import peak_local_max
 from scipy import ndimage as ndi
 
+
 # =========================================================
 # Matplotlib 体裁
 # =========================================================
@@ -61,7 +58,9 @@ def setup_matplotlib_style():
     matplotlib.rcParams["figure.autolayout"] = False
     matplotlib.rcParams["lines.linewidth"] = 1.5
 
+
 setup_matplotlib_style()
+
 
 # =========================================================
 # 表示用：高さ指定でリサイズ（拡大表示用）
@@ -75,6 +74,7 @@ def resize_to_height(img_bgr: np.ndarray, target_h: int) -> np.ndarray:
     # 輪郭のにじみを抑えたいので NEAREST
     resized = cv2.resize(img_bgr, (new_w, int(target_h)), interpolation=cv2.INTER_NEAREST)
     return resized
+
 
 # =========================================================
 # 母材（試験片）マスク：四隅から flood fill で背景を除外
@@ -121,6 +121,7 @@ def compute_specimen_mask_floodfill(
 
     return specimen
 
+
 # =========================================================
 # 共通ユーティリティ
 # =========================================================
@@ -135,6 +136,7 @@ def read_image_from_bytes(file_bytes: bytes) -> np.ndarray:
         img_gray = img
     return img_gray
 
+
 def compute_um_per_px(
     um_per_px: float,
     scalebar_um: Optional[float],
@@ -143,6 +145,7 @@ def compute_um_per_px(
     if (scalebar_um and scalebar_px) and scalebar_px > 0:
         return float(scalebar_um) / float(scalebar_px)
     return float(um_per_px)
+
 
 def apply_preprocess(
     img_gray: np.ndarray,
@@ -156,6 +159,7 @@ def apply_preprocess(
     if gaussian_ksize > 0 and gaussian_ksize % 2 == 1:
         img8 = cv2.GaussianBlur(img8, (gaussian_ksize, gaussian_ksize), gaussian_sigma)
     return img8
+
 
 def binarize(
     img: np.ndarray,
@@ -181,6 +185,7 @@ def binarize(
         _, bin_img = cv2.threshold(img, int(manual_thresh), 255, cv2.THRESH_BINARY_INV)
     return bin_img
 
+
 def morph_cleanup(
     bin_img: np.ndarray,
     open_ksize: int, open_iter: int,
@@ -195,6 +200,7 @@ def morph_cleanup(
         out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, k_close, iterations=int(close_iter))
     return out
 
+
 # =========================================================
 # 材料マスク（最大連結成分）
 # =========================================================
@@ -205,6 +211,7 @@ def largest_component_mask(bin_u8: np.ndarray) -> np.ndarray:
     props = measure.regionprops(lab)
     largest = max(props, key=lambda p: p.area)
     return lab == largest.label
+
 
 # =========================================================
 # 欠陥抽出（黒領域）
@@ -222,6 +229,7 @@ def extract_internal_black_defects(
     holes = filled & (~material)
     return (holes.astype(np.uint8) * 255)
 
+
 # =========================================================
 # 欠陥抽出（黒領域）
 # (B) 元画像の深い黒点（ブラックハット）方式
@@ -236,7 +244,7 @@ def extract_dark_spots_blackhat(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     return:
-        defect_mask_u8 (0/255), blackhat_u8（ROI上の強調画像）
+      defect_mask_u8 (0/255), blackhat_u8（ROI上の強調画像）
     """
     mat = (material_mask_u8 > 0).astype(np.uint8) * 255
     if border_exclude_px > 0:
@@ -258,6 +266,7 @@ def extract_dark_spots_blackhat(
 
     return defect, blackhat_roi
 
+
 # =========================================================
 # 欠陥率（A案）：欠陥総面積 / 材料面積
 # =========================================================
@@ -268,8 +277,8 @@ def compute_area_stats_A(
     bin_clean_u8: Optional[np.ndarray] = None,
     assume_material_is_largest: bool = True,
 ) -> Dict[str, float]:
-    """
-    欠陥率（A案）：欠陥総面積 / 材料面積（%）
+    """欠陥率（A案）：欠陥総面積 / 材料面積（%）
+
     重要：表示（オーバーレイ）とサマリーの齟齬を無くすため、
     この関数に渡す defect_mask_u8 は「最終的に解析に採用した欠陥マスク」を使う。
 
@@ -291,7 +300,6 @@ def compute_area_stats_A(
 
     material_area_um2 = material_area_px * (um_per_px ** 2)
     defect_area_um2 = defect_area_px * (um_per_px ** 2)
-
     defect_ratio_percent = (defect_area_px / (material_area_px + 1e-9)) * 100.0
 
     return {
@@ -301,6 +309,7 @@ def compute_area_stats_A(
         "defect_area_um2": defect_area_um2,
         "defect_ratio_percent": defect_ratio_percent,
     }
+
 
 # =========================================================
 # Watershed（接触分離）
@@ -312,7 +321,6 @@ def split_touching_particles(
 ) -> np.ndarray:
     mask = (bin_u8 > 0)
     distance = ndi.distance_transform_edt(mask)
-
     if h_max > 0:
         _ = morphology.h_maxima(distance, h=h_max)
 
@@ -322,7 +330,6 @@ def split_touching_particles(
         labels=mask,
         exclude_border=False
     )
-
     markers = np.zeros_like(distance, dtype=np.int32)
     if coords.size > 0:
         for i, (r, c) in enumerate(coords, start=1):
@@ -333,17 +340,18 @@ def split_touching_particles(
     labels = segmentation.watershed(-distance, markers, mask=mask)
     return labels
 
+
 def label_by_connected_components(bin_u8: np.ndarray) -> np.ndarray:
     return measure.label(bin_u8 > 0, connectivity=2)
+
 
 # =========================================================
 # 表示・サマリー整合用：df に残ったラベルだけをマスク化
 # =========================================================
 def mask_from_df_labels(label_img: np.ndarray, df: pd.DataFrame) -> np.ndarray:
-    """
-    df の label 列に含まれる領域だけを 0/255 のマスクとして返す。
-    df が空なら全ゼロ（=欠陥なし）を返す。
+    """df の label 列に含まれる領域だけを 0/255 のマスクとして返す。
 
+    df が空なら全ゼロ（=欠陥なし）を返す。
     これにより「赤が出ないのに欠陥率だけ出る」齟齬を解消する。
     """
     out = np.zeros_like(label_img, dtype=np.uint8)
@@ -353,6 +361,7 @@ def mask_from_df_labels(label_img: np.ndarray, df: pd.DataFrame) -> np.ndarray:
     keep = np.isin(label_img, labels)
     out[keep] = 255
     return out
+
 
 # =========================================================
 # 計測
@@ -369,6 +378,7 @@ def min_area_rect_feret(coords_rc: np.ndarray) -> Tuple[float, float, float]:
         (_, _), (w, h), angle = rect
         feret_max, feret_min = (max(w, h), min(w, h))
     return float(feret_max), float(feret_min), float(angle)
+
 
 def extract_region_metrics(
     label_img: np.ndarray,
@@ -437,6 +447,7 @@ def extract_region_metrics(
         df.insert(0, "particle_id", np.arange(1, len(df) + 1))
     return df
 
+
 # =========================================================
 # オーバーレイ（輪郭＝赤）
 # =========================================================
@@ -503,6 +514,7 @@ def overlay_labels(
 
     return img_color
 
+
 # =========================================================
 # 統計プロット
 # =========================================================
@@ -551,11 +563,12 @@ def plot_distributions(df: pd.DataFrame, xcols: List[str], group: Optional[str] 
         if len(d) > 0:
             cdf = np.arange(1, len(d) + 1) / len(d)
             ax3.plot(d, cdf, color="tomato")
-            ax3.set_xlabel(x)
-            ax3.set_ylabel("累積確率")
-            ax3.grid(alpha=0.3)
+        ax3.set_xlabel(x)
+        ax3.set_ylabel("累積確率")
+        ax3.grid(alpha=0.3)
         fig3.tight_layout()
         st.pyplot(fig3, clear_figure=True)
+
 
 # =========================================================
 # 画像1枚処理（母材マスク込み）
@@ -707,18 +720,22 @@ def process_one_image(
 
     return df, img_gray, bin_clean, bin_target_raw, bin_target_used, debug_bh, specimen_mask_u8, overlay
 
+
 # =========================================================
 # Streamlit UI
 # =========================================================
 st.set_page_config(page_title="欠陥（空隙）解析（Streamlit）", layout="wide")
+
 st.title("射出成形材料断面の欠陥（空隙）解析")
 st.caption("黒欠陥：二値の穴方式／元画像の深い黒点（ブラックハット）方式の両対応。欠陥率(A案)も算出。")
 
 with st.sidebar:
     st.header("解析設定")
+
     st.caption("環境情報")
     st.write("Python:", sys.version.split()[0])
     st.write("matplotlib-fontja:", "OK" if FONTJA_OK else "NG（requirements.txt要確認）")
+
     st.markdown("---")
 
     st.subheader("母材マスク（背景の黒樹脂を除外）")
@@ -729,22 +746,16 @@ with st.sidebar:
     show_specimen_mask = st.toggle("母材マスクをプレビュー表示（選択画像）", value=False)
 
     st.markdown("---")
+
     st.subheader("スケール設定")
     col_scale = st.columns(2)
-    
     with col_scale[0]:
-        um_per_px_input = st.number_input(
-            "μm / px（直接）",
-    in_value=0.0,
-            value=1.0,
-            step=0.01,
-            format="%.4f"
-        )
-    
-    with col_scalest.caption("またはスケールバーから算出")
+        um_per_px_input = st.number_input("μm / px（直接）", min_value=0.0, value=1.0, step=0.01, format="%.4f")
+    with col_scale[1]:
+        st.caption("またはスケールバーから算出")
         scalebar_um = st.number_input("スケールバー長 [μm]", min_value=0.0, value=0.0, step=1.0)
         scalebar_px = st.number_input("スケールバー長 [px]", min_value=0.0, value=0.0, step=1.0)
-    
+
     um_per_px = compute_um_per_px(
         um_per_px_input,
         None if scalebar_um == 0 else scalebar_um,
@@ -770,6 +781,7 @@ with st.sidebar:
 
     st.subheader("解析対象（重要）")
     target_mode = st.selectbox("どの領域を検出する？", ["黒領域（欠陥）", "白領域（材料/粒子）"], index=0)
+
     assume_material_is_largest = st.toggle("材料は最大連結成分（白）とみなす（推奨）", value=True)
 
     st.subheader("黒欠陥の検出方式（黒領域モード時）")
@@ -805,6 +817,7 @@ with st.sidebar:
     st.subheader("オーバーレイ（輪郭強調）")
     aspect_low = st.slider("アスペクト比 境界1（緑→黄）", 1.0, 5.0, 2.0, 0.1)
     aspect_high = st.slider("アスペクト比 境界2（黄→赤）", 1.0, 10.0, 3.0, 0.1)
+
     show_id = st.toggle("ID表示", value=True)
     draw_red_contour = st.toggle("輪郭を赤で描画", value=True)
     contour_thickness = st.slider("輪郭の太さ", 1, 8, 3, 1)
@@ -818,8 +831,9 @@ with st.sidebar:
     st.markdown("---")
     st.caption(
         "💡 背景が黒樹脂の画像は、まず「母材マスクで背景を除外」をONにしてください。\n"
-        " うまく切れない場合は tol（許容差）を上げると背景を広く除外できます。"
+        "  うまく切れない場合は tol（許容差）を上げると背景を広く除外できます。"
     )
+
 
 st.markdown("### 入力ファイル")
 uploaded_files = st.file_uploader(
@@ -833,15 +847,11 @@ uploaded_files = st.file_uploader(
 # =========================================================
 if uploaded_files:
     to_process: List[Tuple[str, bytes]] = []
-
-    # ★不安定対策：read()ではなくgetvalue()で常に全バイト取得
     for f in uploaded_files:
-        data = f.getvalue()  # ← ここが重要（read()を使わない）
-
+        data = f.getvalue()  # ★不安定対策：read()ではなくgetvalue()
         if data is None or len(data) == 0:
             st.warning(f"【{f.name}】0バイトです。再実行の影響の可能性があります。再アップロードをお試しください。")
             continue
-
         if f.name.lower().endswith(".zip"):
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 for info in zf.infolist():
@@ -859,7 +869,6 @@ if uploaded_files:
     summaries: List[Dict[str, float]] = []
 
     progress = st.progress(0)
-
     for idx, (name, bts) in enumerate(to_process, start=1):
         try:
             df, img_gray, bin_clean, bin_target_raw, bin_target_used, debug_bh, specimen_mask_u8, overlay_img = process_one_image(
@@ -916,29 +925,36 @@ if uploaded_files:
     if len(previews) > 0:
         names = sorted(list(previews.keys()))
         selected_name = st.selectbox("表示する画像を選択してください", names, index=0)
-        img_gray, bin_clean, bin_target_raw, bin_target_used, debug_bh, specimen_mask_u8 = previews[selected_name]
 
+        img_gray, bin_clean, bin_target_raw, bin_target_used, debug_bh, specimen_mask_u8 = previews[selected_name]
         show_blackhat = (target_mode == "黒領域（欠陥）" and defect_mode_black == "元画像の深い黒点（ブラックハット）")
+
         st.markdown(f"**{selected_name}**")
 
         if show_blackhat:
             cols = st.columns(5)
-            with colsst.image(img_gray, caption="元画像", use_container_width=True, clamp=True)
+            with cols[0]:
+                st.image(img_gray, caption="元画像", use_container_width=True, clamp=True)
             with cols[1]:
-                st.image(bin_clean, caption="二値（後処理込み）※母材内", use_container_width          with cols[2]:
-                st.image(debug_bh, caption="ブラックハット強調（ROI）※母材内", use_container_width          with cols[3]:
-                st.image(bin="検出対象マスク（欠陥：最終採用）※母材内", use_container_width=True, clamp=True)
+                st.image(bin_clean, caption="二値（後処理込み）※母材内", use_container_width=True, clamp=True)
+            with cols[2]:
+                st.image(debug_bh, caption="ブラックハット強調（ROI）※母材内", use_container_width=True, clamp=True)
+            with cols[3]:
+                st.image(bin_target_used, caption="検出対象マスク（欠陥：最終採用）※母材内", use_container_width=True, clamp=True)
             with cols[4]:
-                st.image(cvelected_name], cv2.COLOR_BGR2RGB),
+                st.image(cv2.cvtColor(overlays[selected_name], cv2.COLOR_BGR2RGB),
                          caption="オーバーレイ（輪郭=赤）",
                          use_container_width=True, clamp=True)
         else:
             cols = st.columns(4)
             with cols[0]:
-                st.image(img_gray, caption="元画像", use_container_width=True, clamp=Truelsst.image(bin_clean, caption="二値（後処理込み）※母材内", use_container_width=True, clamp=True)
+                st.image(img_gray, caption="元画像", use_container_width=True, clamp=True)
+            with cols[1]:
+                st.image(bin_clean, caption="二値（後処理込み）※母材内", use_container_width=True, clamp=True)
             with cols[2]:
-age(bin_target_used, caption=f"検出対象マスク（最終採用）：{target_mode}", use_container_width=True, clamp=True)
-            with colsst.image(cv2.cvtColor(overlays[selected_name], cv2.COLOR_BGR2RGB),
+                st.image(bin_target_used, caption=f"検出対象マスク（最終採用）：{target_mode}", use_container_width=True, clamp=True)
+            with cols[3]:
+                st.image(cv2.cvtColor(overlays[selected_name], cv2.COLOR_BGR2RGB),
                          caption="オーバーレイ（輪郭=赤）",
                          use_container_width=True, clamp=True)
 
@@ -960,11 +976,11 @@ age(bin_target_used, caption=f"検出対象マスク（最終採用）：{target
     # --- 欠陥率サマリー ---
     if not df_sum.empty:
         st.markdown("### 欠陥率サマリー（A案：欠陥総面積 / 材料面積）")
-        df_sum_disp = df_sum[
-            ["source", "target_mode", "defect_mode",
-             "material_area_um2", "defect_area_um2", "defect_ratio_percent",
-             "material_area_px", "defect_area_px"]
-        ].copy()
+        df_sum_disp = df_sum[[
+            "source", "target_mode", "defect_mode",
+            "material_area_um2", "defect_area_um2", "defect_ratio_percent",
+            "material_area_px", "defect_area_px"
+        ]].copy()
 
         df_sum_disp.rename(columns={
             "material_area_um2": "材料面積 [μm²]",
@@ -1000,22 +1016,21 @@ age(bin_target_used, caption=f"検出対象マスク（最終採用）：{target
         )
 
     # --- オーバーレイZIP ---
-    if len(overlays) > 0:
-        with tempfile.TemporaryDirectory() as tmpd:
-            zip_path = os.path.join(tmpd, "overlays.zip")
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for name, img in overlays.items():
-                    out_name = os.path.splitext(os.path.basename(name))[0] + "_overlay.png"
-                    _, buf = cv2.imencode(".png", img)
-                    zf.writestr(out_name, buf.tobytes())
+    with tempfile.TemporaryDirectory() as tmpd:
+        zip_path = os.path.join(tmpd, "overlays.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for name, img in overlays.items():
+                out_name = os.path.splitext(os.path.basename(name))[0] + "_overlay.png"
+                _, buf = cv2.imencode(".png", img)
+                zf.writestr(out_name, buf.tobytes())
 
-            with open(zip_path, "rb") as fz:
-                st.download_button(
-                    "🖼️ 注釈画像（ZIP）をダウンロード",
-                    data=fz.read(),
-                    file_name="overlays.zip",
-                    mime="application/zip"
-                )
+        with open(zip_path, "rb") as fz:
+            st.download_button(
+                "🖼️ 注釈画像（ZIP）をダウンロード",
+                data=fz.read(),
+                file_name="overlays.zip",
+                mime="application/zip"
+            )
 
     # --- 統計可視化 ---
     if not df_all.empty:
