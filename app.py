@@ -825,9 +825,9 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     to_process: List[Tuple[str, bytes]] = []
 
-    # ★不安定対策：UploadedFile.read() を使わず getvalue() で常に全バイト取得
+    # ★不安定対策：read()ではなくgetvalue()で常に全バイト取得
     for f in uploaded_files:
-        data = f.getvalue()  # ← ここが重要
+        data = f.getvalue()  # ← ここが重要（read()を使わない）
 
         if data is None or len(data) == 0:
             st.warning(f"【{f.name}】0バイトです。再実行の影響の可能性があります。再アップロードをお試しください。")
