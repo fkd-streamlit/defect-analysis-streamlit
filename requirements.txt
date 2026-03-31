@@ -1,4 +1,4 @@
-streamlit==1.41.1
+streamlit==1.55.0
 numpy<2
 pandas
 scipy
@@ -7,4 +7,3 @@ Pillow
 scikit-image
 opencv-python-headless
 matplotlib-fontja
-
